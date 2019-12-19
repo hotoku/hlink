@@ -13,73 +13,102 @@ import sqlite3
 
 class SQL:
     create = """
+drop table if exists url;
 create table url (
-  id int primary key,
+  id integer primary key autoincrement,
   key text,
   url text
 );
 """
+    insert_url = """
+insert into url(key, url) values (
+  ?, ?
+);
+"""
 
 
-class Repository:
-    db_path = None
-    connection = None
-    cursor = None
+class DB:
+    path = None
+    con = None
 
-    def __init__(self, db_path):
-        self.db_path = db_path
+    def __init__(self, path):
+        self.path = path
         self.check_db()
-        self.connect_db()
+        self.con = sqlite3.connect(self.path)
 
     def check_db(self):
-        if not os.path.exists(self.db_path):
+        if not os.path.exists(self.path):
             sys.stderr.write(f"""\
-db file {self.db_path} does not exist.
+db file {self.path} does not exist.
 create one ? [y/n]
 > """)
             if input() == "y":
                 self.create()
             else:
                 raise Exception(
-                    f"db file {self.db_path} does not exist and choosed not create")
-
-    def connect_db(self):
-        self.connection = sqlite3.connect(self.db_path)
-        self.cursor = self.connection.cursor()
-
-    def execute(self, sql):
-        return self.curosor.execute(self, sql)
-
-    def executemany(self, sql, it):
-        return self.curosor.executemany(self, sql, it)
-
-    def executescript(self, sql):
-        return self.cursor.executescript(self, sql)
+                    f"db file {self.path} does not exist and choosed not create")
 
     def create(self):
-        with sqlite3.connect(self.db_path) as con:
+        with sqlite3.connect(self.path) as con:
             cur = con.cursor()
             cur.executescript(SQL.create)
             con.commit()
 
-    def add(self, keys, url):
-        pass
+    def execute(self, sql):
+        cur = self.con.cursor()
+        try:
+            cur.execute(sql)
+            self.con.commit()
+        except Exception as e:
+            self.con.rollback()
+            raise e
+        finally:
+            cur.close()
+
+    def executemany(self, sql, it):
+        cur = self.con.cursor()
+        try:
+            cur.executemany(sql, it)
+            self.con.commit()
+        except Exception as e:
+            self.con.rollback()
+            raise e
+        finally:
+            cur.close()
+
+    def executescript(self, sql):
+        cur = self.con.cursor()
+        try:
+            cur.executescript(sql)
+            self.con.commit()
+        except Exception as e:
+            self.con.rollback()
+            raise e
+        finally:
+            cur.close()
+
+
+class Repository:
+    db = None
+
+    def __init__(self, db_path):
+        self.db = DB(db_path)
+
+    def add(self, key, url):
+        self.db.executemany(SQL.insert_url,
+                            [(key, url)])
 
 
 class Command:
-    repository = None
-
-    def __init__(self, subparsers, repository):
+    def __init__(self, subparsers):
         self.parser = subparsers.add_parser(self.name,
                                             help=self.__doc__)
         self.register_argument()
         self.parser.set_defaults(handler=self.handler)
 
-        self.repository = repository
-
     def register_argument(self): pass
 
-    def handler(self, args): pass
+    def handler(self, args, repo): pass
 
 
 class Add(Command):
@@ -87,13 +116,14 @@ class Add(Command):
     name = "add"
 
     def __init__(self, subparsers):
-        super(CommandA, self).__init__(subparsers)
+        super(Add, self).__init__(subparsers)
 
     def register_argument(self):
-        self.parser.add_argument("url",  type="str", required=True)
+        self.parser.add_argument("url")
 
     def handler(self, args, repo):
         keys = input("keys? :")
+        url = args.url
         num = repo.add(keys, url)
         print(num)
 
@@ -130,8 +160,8 @@ create one ? [y/n]
     def create_config_dir(self):
         os.mkdir(self.conf_dir)
 
-    def run():
-        commands = [CommandA, CommandB]
+    def run(self):
+        commands = [Add]
 
         parser = argparse.ArgumentParser(description="sample")
         subparsers = parser.add_subparsers()
@@ -140,7 +170,7 @@ create one ? [y/n]
 
         args = parser.parse_args()
         if hasattr(args, "handler"):
-            args.handler(args)
+            args.handler(args, self.repository)
         else:
             parser.print_help()
 
