@@ -10,6 +10,7 @@ import sys
 import json
 import sqlite3
 import logging
+import functools as fp
 
 
 class SQL:
@@ -21,17 +22,33 @@ create table url (
   url text
 );
 """
+
     insert_url = """
 insert into url(key, url) values (
   ?, ?
 );
 """
+
     @staticmethod
     def search_by_key(key):
-        return f"""
-select * from url
+        sql = f"""
+select id, key, url from url
 where key like '{key}';
 """
+        cols = "id key url".split()
+        return sql, cols
+
+    delete_by_num = """
+delete from url where id=?;
+"""
+
+    @staticmethod
+    def list_all():
+        sql = f"""
+select id, key, url from url;
+"""
+        cols = "id key url".split()
+        return sql, cols
 
 
 class DB:
@@ -62,19 +79,24 @@ create one ? [y/n]
             cur.executescript(SQL.create)
             con.commit()
 
-    def execute(self, sql):
+    @staticmethod
+    def row2dict(row, cols):
+        return fp.reduce(lambda x, y: dict(x, **y),
+                         [{c: row[c]} for c in cols])
+
+    def execute(self, sql, cols):
         logging.debug(sql)
         cur = self.con.cursor()
         rows = cur.execute(sql)
-        return [row for row in rows]
+        return [DB.row2dict(row, cols) for row in rows]
 
     def executemany(self, sql, it):
         logging.debug(sql)
         cur = self.con.cursor()
         try:
-            ret = cur.executemany(sql, it)
+            rows = cur.executemany(sql, it)
             self.con.commit()
-            return ret
+            return [row for row in rows]
         except Exception as e:
             self.con.rollback()
             raise e
@@ -107,10 +129,15 @@ class Repository:
 
     def search(self, keys):
         like = "%" + "%".join(keys) + "%"
-        ret = self.db.execute(SQL.search_by_key(like))
-        return [dict(id=row["id"],
-                     key=row["key"],
-                     url=row["url"]) for row in ret]
+        return self.db.execute(*SQL.search_by_key(like))
+
+    def remove(self, num):
+        ret = self.db.executemany(SQL.delete_by_num,
+                                  [(num,)])
+        return ret
+
+    def list(self):
+        return self.db.execute(*SQL.list_all())
 
 
 class Command:
@@ -138,7 +165,7 @@ class Add(Command):
     def handler(self, args, repo):
         keys = input("keys? :")
         url = args.url
-        num = repo.add(keys, url)
+        num = repo.add(keys, url)  # todo: この返り値の扱いを考える
         print(num)
 
 
@@ -162,6 +189,41 @@ class Search(Command):
         else:
             for v in vals:
                 print("{0[id]}: {0[key]}, {0[url]}".format(v))
+
+
+class Remove(Command):
+    "remove a record"
+    name = "r"
+
+    def __init__(self, subparsers):
+        super(Remove, self).__init__(subparsers)
+
+    def register_argument(self):
+        self.parser.add_argument("num", type=int)
+
+    def handler(self, args, repo):
+        ret = repo.remove(args.num)
+        print(ret)
+
+
+class List(Command):
+    "list all records"
+    name = "l"
+
+    def __init__(self, subparsers):
+        super(List, self).__init__(subparsers)
+
+    def register_argument(self):
+        pass
+
+    def handler(self, args, repo):
+        List.list(args, repo)
+
+    @staticmethod
+    def list(args, repo):
+        ret = repo.list()
+        for row in ret:
+            print("{0[id]}: [{0[key]}] {0[url]}".format(row))
 
 
 class App:
@@ -210,7 +272,7 @@ create one ? [y/n]
         os.mkdir(self.conf_dir)
 
     def run(self):
-        commands = [Add, Search]
+        commands = [Add, Search, Remove, List]
 
         parser = argparse.ArgumentParser(description="sample")
         subparsers = parser.add_subparsers()
@@ -221,7 +283,7 @@ create one ? [y/n]
         if hasattr(args, "handler"):
             args.handler(args, self.repository)
         else:
-            parser.print_help()
+            List.list(args, self.repository)
 
     def read_config(self):
         if os.path.exists(self.conf_path):
